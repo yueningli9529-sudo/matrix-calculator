@@ -1,0 +1,18 @@
+# macOS generated files
+.DS_Store
+
+# Qt Creator local settings
+.qtcreator/
+*.user
+*.user.*
+
+# Build directories and generated applications
+/build/
+/build-*/
+/cmake-build-*/
+*.app/
+
+# Locally compiled test executable
+/core/tests
+# Editor temporary files
+tempCodeRunnerFile.*

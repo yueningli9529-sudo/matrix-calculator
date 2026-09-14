@@ -2,7 +2,9 @@
 #include "ui_inputpage.h"
 #include <QListWidgetItem>
 #include <QInputDialog>
+#include <QMessageBox>
 #include "MatrixRepository.h"
+#include <cmath>
 
 InputPage::InputPage(QWidget *parent)
     : QWidget(parent)
@@ -11,6 +13,7 @@ InputPage::InputPage(QWidget *parent)
     ui->setupUi(this);
     ui->displayPageLayout->setAlignment( ui->matrixDisplayWidget, Qt::AlignCenter);
     ui->splitter->setSizes({750, 250});
+    set_input_state(input_state_);
 
     //build
     QObject::connect(
@@ -18,29 +21,45 @@ InputPage::InputPage(QWidget *parent)
         &QPushButton::clicked,
         [this]()
         {
+            if(input_state_ == InputState::Editing)
+            {
+                QMessageBox::StandardButton choice = QMessageBox::question(
+                    this,
+                    "Unsaved Matrix",
+                    "The current matrix has not been saved. Discard it?",
+                    QMessageBox::Discard | QMessageBox::Cancel,
+                    QMessageBox::Cancel
+                    );
+                if (choice == QMessageBox::Cancel)
+                {
+                    return;
+                }
+            }
             int row = ui->RowSpinBox->value();
             int column = ui->ColumnSpinBox->value();
             int datatype = ui->DataTypeComboBox->currentIndex();
+            current_record_ = MatrixRecord();
             switch(datatype){
             case 0:
             {
-                this->current_record_.matrix_ = Matrix<Rational> (row,column);
+                this->current_record_.value().matrix_ = Matrix<Rational> (row,column);
                 break;
             }
             case 1:
             {
-                this->current_record_.matrix_ = Matrix<int> (row,column);
+                this->current_record_.value().matrix_ = Matrix<int> (row,column);
                 break;
             }
             case 2:
             {
-                this->current_record_.matrix_ = Matrix<double> (row,column);
+                this->current_record_.value().matrix_ = Matrix<double> (row,column);
                 break;
             }
             default:
                 break;
             };
             build_matrix();
+            set_input_state(InputState::Editing);
         });
     //save
     QObject::connect(
@@ -49,7 +68,16 @@ InputPage::InputPage(QWidget *parent)
         this,
         [this]()
         {
-            load_input();
+            bool ok = load_input();
+            if(!ok)
+            {
+                QMessageBox::critical(
+                    this,
+                    "Invalid Input",
+                    "The matrix contains invalid values."
+                    );
+                return;
+            }
             QString name = name_matrix();
             if(name.isEmpty())
             {
@@ -58,10 +86,10 @@ InputPage::InputPage(QWidget *parent)
             else
             {
                 QUuid id = QUuid::createUuid();
-                this->current_record_.id_ = id;
-                this->current_record_.name_ = name;
+                this->current_record_.value().id_ = id;
+                this->current_record_.value().name_ = name;
             }
-            switch_input_to_demonstrate();
+            demonstrate_current_matrix();
             emit save_button_clicked();
         });
     //switchtem
@@ -82,7 +110,7 @@ InputPage::InputPage(QWidget *parent)
                 return;
             }
             current_record_ = *record;
-            switch_input_to_demonstrate();
+            demonstrate_current_matrix();
         });
     //search engine
     QObject::connect(
@@ -93,10 +121,38 @@ InputPage::InputPage(QWidget *parent)
             filter_repo_list(keyword);
         });
 }
+// state
+void InputPage::set_input_state(InputState input_state)
+{
+    input_state_ = input_state;
+    update_ui_for_state();
+}
+
+void InputPage::update_ui_for_state()
+{
+    if(input_state_ == InputState::Empty)
+    {
+        ui->matrixStackedWidget->setVisible(true);
+        ui->matrixStackedWidget->setCurrentWidget(ui->emptyPage);
+        ui->SaveButton->setEnabled(false);
+    }
+    else if(input_state_ == InputState::Editing)
+    {
+        ui->matrixStackedWidget->setVisible(true);
+        ui->matrixStackedWidget->setCurrentWidget(ui->editorPage);
+        ui->SaveButton->setEnabled(true);
+    }
+    else if(input_state_ == InputState::Viewing)
+    {
+        ui->matrixStackedWidget->setVisible(true);
+        ui->matrixStackedWidget->setCurrentWidget(ui->displayPage);
+        ui->SaveButton->setEnabled(false);
+    }
+}
 
 MatrixRecord InputPage::InputResult() const
 {
-    return current_record_;
+    return current_record_.value();
 }
 
 void InputPage::setRepository( const MatrixRepository *repository)
@@ -201,7 +257,7 @@ void InputPage::build_matrix()
                     vinculum->setText(QString("/"));
 
                     QLineEdit *denominator = new QLineEdit();
-                    auto *denominator_validator = new QIntValidator(1,999,denominator);
+                    auto *denominator_validator = new QIntValidator(1,9999,denominator);
                     denominator->setValidator(denominator_validator);
                     denominator->setPlaceholderText(QString("1"));
                     denominator->setMaximumSize(50,20);
@@ -250,72 +306,137 @@ void InputPage::build_matrix()
             }
         }
     };
-    std::visit(visitor,this->current_record_.matrix_);
+    std::visit(visitor,this->current_record_.value().matrix_);
 }
-void InputPage::load_input()
+bool InputPage::load_input()
 {
-    auto visitor = [this](auto &matrix)
+    if(input_state_ != InputState::Editing)
+    {
+        return false;
+    }
+
+    if(!current_record_.has_value() || matrixLayout_ == nullptr)
+    {
+        return false;
+    }
+    auto visitor = [this](auto &matrix) -> bool
     {
         using T = std::decay_t<decltype(matrix)>;
         if constexpr (std::is_same_v<T,Matrix<Rational>>)
         {
             for(std::size_t i=0 ;i<matrix.row(); i++){
                 for(std::size_t j=0 ;j<matrix.column(); j++){
-                    QLayout *HLayout = this->matrixLayout_->itemAtPosition(i,j)->layout();
-                    QWidget *w1 = HLayout->itemAt(0)->widget();
+                    QGridLayout *mLayout = this->matrixLayout_;
+                    QLayoutItem *mlayoutitem = mLayout->itemAtPosition(i,j);
+                    if(mlayoutitem == nullptr){return false;}
+                    QLayout *HLayout = mlayoutitem->layout();
+                    if(HLayout == nullptr){return false;}
+                    QLayoutItem *item1 = HLayout->itemAt(0);
+                    if(item1 == nullptr){return false;}
+                    QWidget *w1 = item1->widget();
+                    if(w1 == nullptr){return false;}
                     QLineEdit *lineEdit1 = qobject_cast<QLineEdit *>(w1);
-                    if (lineEdit1 == nullptr){return;}
+                    if (lineEdit1 == nullptr){return false;}
                     QString text1 = lineEdit1->text();
-                    int numerator = text1.toInt();
+                    bool nok = true;
+                    int numerator = 0;
+                    if(!text1.isEmpty())
+                    {
+                        if (!lineEdit1->hasAcceptableInput()){return false;}
+                        numerator = text1.toInt(&nok);
+                    }
+                    if(!nok){return false;}
 
-                    QWidget *w2 = HLayout->itemAt(2)->widget();
+
+                    QLayoutItem *item2 = HLayout->itemAt(2);
+                    if(item2 == nullptr){return false;}
+                    QWidget *w2 = item2->widget();
+                    if(w2 == nullptr){return false;}
                     QLineEdit *lineEdit2 = qobject_cast<QLineEdit *>(w2);
-                    if (lineEdit2 == nullptr){return;}
+                    if (lineEdit2 == nullptr){return false;}
                     QString text2 = lineEdit2->text();
-                    if(text2.isEmpty()){text2 = QString("1");};
-                    int denominator = text2.toInt();
-
+                    bool dok = true;
+                    int denominator = 1;
+                    if(!text2.isEmpty())
+                    {
+                        if (!lineEdit2->hasAcceptableInput()){return false;}
+                        denominator = text2.toInt(&dok);
+                    }
+                    if(!dok || denominator == 0){return false;}
                     Rational rational = Rational(numerator,denominator);
                     matrix.at(i,j)= rational;
                 }
             }
+            return true;
         }
         else if constexpr (std::is_same_v<T,Matrix<int>>)
         {
             for(std::size_t i=0 ;i<matrix.row(); i++){
                 for(std::size_t j=0 ;j<matrix.column(); j++){
-                    QLayout *HLayout = this->matrixLayout_->itemAtPosition(i,j)->layout();
-                    QWidget *w1 = HLayout->itemAt(0)->widget();
-                    QLineEdit *lineEdit1 = qobject_cast<QLineEdit *>(w1);
-                    if (lineEdit1 == nullptr){return;}
+                    QLayoutItem *cellItem = matrixLayout_->itemAtPosition(i,j);
+                    if(cellItem == nullptr){return false;}
+                    QLayout *HLayout = cellItem->layout();
+                    if(HLayout == nullptr){return false;}
+                    QLayoutItem *inputItem = HLayout->itemAt(0);
+                    if(inputItem == nullptr){return false;}
+                    QLineEdit *lineEdit1 = qobject_cast<QLineEdit *>(inputItem->widget());
+                    if (lineEdit1 == nullptr){return false;}
                     QString text1 = lineEdit1->text();
-                    int number = text1.toInt();
-
+                    bool ok = true;
+                    int number = 0;
+                    if(!text1.isEmpty())
+                    {
+                        if (!lineEdit1->hasAcceptableInput()){return false;}
+                        number = text1.toInt(&ok);
+                    }
+                    if(!ok){return false;}
                     matrix.at(i,j)= number;
                 }
             }
+            return true;
         }
         else if constexpr (std::is_same_v<T,Matrix<double>>)
         {
             for(std::size_t i=0 ;i<matrix.row(); i++){
                 for(std::size_t j=0 ;j<matrix.column(); j++){
-                    QLayout *HLayout = this->matrixLayout_->itemAtPosition(i,j)->layout();
-                    QWidget *w1 = HLayout->itemAt(0)->widget();
-                    QLineEdit *lineEdit1 = qobject_cast<QLineEdit *>(w1);
-                    if (lineEdit1 == nullptr){return;}
+                    QLayoutItem *cellItem = matrixLayout_->itemAtPosition(i,j);
+                    if(cellItem == nullptr){return false;}
+                    QLayout *HLayout = cellItem->layout();
+                    if(HLayout == nullptr){return false;}
+                    QLayoutItem *inputItem = HLayout->itemAt(0);
+                    if(inputItem == nullptr){return false;}
+                    QLineEdit *lineEdit1 = qobject_cast<QLineEdit *>(inputItem->widget());
+                    if (lineEdit1 == nullptr){return false;}
                     QString text1 = lineEdit1->text();
-                    double number = text1.toDouble();
-
+                    bool ok = true;
+                    double number = 0;
+                    if(!text1.isEmpty())
+                    {
+                        if (!lineEdit1->hasAcceptableInput()){return false;}
+                        number = text1.toDouble(&ok);
+                    }
+                    if(!ok || !std::isfinite(number)){return false;}
                     matrix.at(i,j)= number;
                 }
             }
+            return true;
         }
     };
-    std::visit(visitor,this->current_record_.matrix_);
+    MatrixVariant temporary_matrix = current_record_.value().matrix_;
+    bool ok = std::visit(visitor,temporary_matrix);
+    if(!ok)
+    {
+        return false;
+    }
+    else
+    {
+        current_record_.value().matrix_ = temporary_matrix;
+        return true;
+    }
 }
-void InputPage::switch_input_to_demonstrate()
+void InputPage::demonstrate_current_matrix()
 {
-    ui->matrixDisplayWidget->setMatrix(current_record_.matrix_);
+    ui->matrixDisplayWidget->setMatrix(current_record_.value().matrix_);
     ui->matrixStackedWidget->setCurrentWidget(ui->displayPage);
 }
 QString InputPage::name_matrix()

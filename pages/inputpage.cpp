@@ -68,16 +68,13 @@ InputPage::InputPage(QWidget *parent)
         this,
         [this]()
         {
-            bool ok = load_input();
-            if(!ok)
+            std::optional<InputError> error = load_input();
+            if(error.has_value())
             {
-                QMessageBox::critical(
-                    this,
-                    "Invalid Input",
-                    "The matrix contains invalid values."
-                    );
+                show_input_error(error.value());
                 return;
             }
+
             QString name = name_matrix();
             if(name.isEmpty())
             {
@@ -153,6 +150,68 @@ void InputPage::update_ui_for_state()
 MatrixRecord InputPage::InputResult() const
 {
     return current_record_.value();
+}
+void InputPage::show_input_error(const InputError &error)
+{
+    if(error.input_error_type_ == InputErrorType::InvalidValue)
+    {
+        if(error.position_.has_value())
+        {
+            QString part;
+            if(error.position_->input_part_ == InputPart::Numerator)
+            {
+                part = "numerator";
+            }
+            else if(error.position_->input_part_ == InputPart::Denominator)
+            {
+                part = "denominator";
+            }
+            else
+            {
+                part = "value";
+            }
+            QMessageBox::warning(
+                this,
+                "Invalid Input",
+                QString("Invalid %1 at row %2, column %3.").arg(part)
+                    .arg(error.position_->row_number_)
+                    .arg(error.position_->column_number_)
+                );
+            return;
+        }
+        else
+        {
+            QMessageBox::warning(
+                this,
+                "Invalid Input",
+                "The matrix contains an invalid value."
+                );
+            return;
+        }
+    }
+    else
+    {
+        if(error.position_ == std::nullopt)
+        {
+            QMessageBox::critical(
+                this,
+                "Internal State Error",
+                "Unable to read the matrix because of an internal error."
+                );
+            return;
+        }
+        else
+        {
+            QMessageBox::critical(
+                this,
+                "Internal State Error",
+                QString("Unable to read the matrix because of an internal error at row %1, column %2.")
+                    .arg(error.position_->row_number_)
+                    .arg(error.position_->column_number_)
+                );
+            return;
+        }
+    }
 }
 
 void InputPage::setRepository( const MatrixRepository *repository)
@@ -308,18 +367,18 @@ void InputPage::build_matrix()
     };
     std::visit(visitor,this->current_record_.value().matrix_);
 }
-bool InputPage::load_input()
+std::optional<InputPage::InputError> InputPage::load_input()
 {
     if(input_state_ != InputState::Editing)
     {
-        return false;
+        return InputError{InputErrorType::InternalStateError,std::nullopt};
     }
 
     if(!current_record_.has_value() || matrixLayout_ == nullptr)
     {
-        return false;
+        return InputError{InputErrorType::InternalStateError,std::nullopt};
     }
-    auto visitor = [this](auto &matrix) -> bool
+    auto visitor = [this](auto &matrix) -> std::optional<InputError>
     {
         using T = std::decay_t<decltype(matrix)>;
         if constexpr (std::is_same_v<T,Matrix<Rational>>)
@@ -328,110 +387,134 @@ bool InputPage::load_input()
                 for(std::size_t j=0 ;j<matrix.column(); j++){
                     QGridLayout *mLayout = this->matrixLayout_;
                     QLayoutItem *mlayoutitem = mLayout->itemAtPosition(i,j);
-                    if(mlayoutitem == nullptr){return false;}
+                    if(mlayoutitem == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Numerator}};}
                     QLayout *HLayout = mlayoutitem->layout();
-                    if(HLayout == nullptr){return false;}
+                    if(HLayout == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Numerator}};}
                     QLayoutItem *item1 = HLayout->itemAt(0);
-                    if(item1 == nullptr){return false;}
+                    if(item1 == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Numerator}};}
                     QWidget *w1 = item1->widget();
-                    if(w1 == nullptr){return false;}
+                    if(w1 == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Numerator}};}
                     QLineEdit *lineEdit1 = qobject_cast<QLineEdit *>(w1);
-                    if (lineEdit1 == nullptr){return false;}
+                    if (lineEdit1 == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Numerator}};}
                     QString text1 = lineEdit1->text();
                     bool nok = true;
                     int numerator = 0;
                     if(!text1.isEmpty())
                     {
-                        if (!lineEdit1->hasAcceptableInput()){return false;}
+                        if (!lineEdit1->hasAcceptableInput())
+                        {return InputError{InputErrorType::InvalidValue,InputPosition{i+1,j+1,InputPart::Numerator}};}
                         numerator = text1.toInt(&nok);
                     }
-                    if(!nok){return false;}
+                    if(!nok)
+                    {return InputError{InputErrorType::InvalidValue,InputPosition{i+1,j+1,InputPart::Numerator}};}
 
 
                     QLayoutItem *item2 = HLayout->itemAt(2);
-                    if(item2 == nullptr){return false;}
+                    if(item2 == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Denominator}};}
                     QWidget *w2 = item2->widget();
-                    if(w2 == nullptr){return false;}
+                    if(w2 == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Denominator}};}
                     QLineEdit *lineEdit2 = qobject_cast<QLineEdit *>(w2);
-                    if (lineEdit2 == nullptr){return false;}
+                    if (lineEdit2 == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Denominator}};}
                     QString text2 = lineEdit2->text();
                     bool dok = true;
                     int denominator = 1;
                     if(!text2.isEmpty())
                     {
-                        if (!lineEdit2->hasAcceptableInput()){return false;}
+                        if (!lineEdit2->hasAcceptableInput())
+                        {return InputError{InputErrorType::InvalidValue,InputPosition{i+1,j+1,InputPart::Denominator}};}
                         denominator = text2.toInt(&dok);
                     }
-                    if(!dok || denominator == 0){return false;}
+                    if(!dok || denominator == 0)
+                    {return InputError{InputErrorType::InvalidValue,InputPosition{i+1,j+1,InputPart::Denominator}};}
                     Rational rational = Rational(numerator,denominator);
                     matrix.at(i,j)= rational;
                 }
             }
-            return true;
+            return std::nullopt;
         }
         else if constexpr (std::is_same_v<T,Matrix<int>>)
         {
             for(std::size_t i=0 ;i<matrix.row(); i++){
                 for(std::size_t j=0 ;j<matrix.column(); j++){
                     QLayoutItem *cellItem = matrixLayout_->itemAtPosition(i,j);
-                    if(cellItem == nullptr){return false;}
+                    if(cellItem == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Value}};}
                     QLayout *HLayout = cellItem->layout();
-                    if(HLayout == nullptr){return false;}
+                    if(HLayout == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Value}};}
                     QLayoutItem *inputItem = HLayout->itemAt(0);
-                    if(inputItem == nullptr){return false;}
+                    if(inputItem == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Value}};}
                     QLineEdit *lineEdit1 = qobject_cast<QLineEdit *>(inputItem->widget());
-                    if (lineEdit1 == nullptr){return false;}
+                    if (lineEdit1 == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Value}};}
                     QString text1 = lineEdit1->text();
                     bool ok = true;
                     int number = 0;
                     if(!text1.isEmpty())
                     {
-                        if (!lineEdit1->hasAcceptableInput()){return false;}
+                        if (!lineEdit1->hasAcceptableInput())
+                        {return InputError{InputErrorType::InvalidValue,InputPosition{i+1,j+1,InputPart::Value}};}
                         number = text1.toInt(&ok);
                     }
-                    if(!ok){return false;}
+                    if(!ok)
+                    {return InputError{InputErrorType::InvalidValue,InputPosition{i+1,j+1,InputPart::Value}};}
                     matrix.at(i,j)= number;
                 }
             }
-            return true;
+            return std::nullopt;
         }
         else if constexpr (std::is_same_v<T,Matrix<double>>)
         {
             for(std::size_t i=0 ;i<matrix.row(); i++){
                 for(std::size_t j=0 ;j<matrix.column(); j++){
                     QLayoutItem *cellItem = matrixLayout_->itemAtPosition(i,j);
-                    if(cellItem == nullptr){return false;}
+                    if(cellItem == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Value}};}
                     QLayout *HLayout = cellItem->layout();
-                    if(HLayout == nullptr){return false;}
+                    if(HLayout == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Value}};}
                     QLayoutItem *inputItem = HLayout->itemAt(0);
-                    if(inputItem == nullptr){return false;}
+                    if(inputItem == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Value}};}
                     QLineEdit *lineEdit1 = qobject_cast<QLineEdit *>(inputItem->widget());
-                    if (lineEdit1 == nullptr){return false;}
+                    if (lineEdit1 == nullptr)
+                    {return InputError{InputErrorType::InternalStateError,InputPosition{i+1,j+1,InputPart::Value}};}
                     QString text1 = lineEdit1->text();
                     bool ok = true;
                     double number = 0;
                     if(!text1.isEmpty())
                     {
-                        if (!lineEdit1->hasAcceptableInput()){return false;}
+                        if (!lineEdit1->hasAcceptableInput())
+                        {return InputError{InputErrorType::InvalidValue,InputPosition{i+1,j+1,InputPart::Value}};}
                         number = text1.toDouble(&ok);
                     }
-                    if(!ok || !std::isfinite(number)){return false;}
+                    if(!ok || !std::isfinite(number))
+                    {return InputError{InputErrorType::InvalidValue,InputPosition{i+1,j+1,InputPart::Value}};}
                     matrix.at(i,j)= number;
                 }
             }
-            return true;
+            return std::nullopt;
         }
     };
     MatrixVariant temporary_matrix = current_record_.value().matrix_;
-    bool ok = std::visit(visitor,temporary_matrix);
-    if(!ok)
+    std::optional<InputError> error = std::visit(visitor,temporary_matrix);
+    if(error.has_value())
     {
-        return false;
+        return error;
     }
     else
     {
         current_record_.value().matrix_ = temporary_matrix;
-        return true;
+        return std::nullopt;
     }
 }
 void InputPage::demonstrate_current_matrix()
